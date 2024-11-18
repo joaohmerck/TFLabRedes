@@ -3,20 +3,22 @@ import struct
 import time
 import datetime
 import ipaddress
-from scapy.all import ICMP, IP, sr1
 from urllib.parse import urlparse
+import subprocess
 
-# Função para enviar um ICMP request e verificar se o host está ativo
+# Função para enviar um ping e verificar se o host está ativo
 def ping_host(host, timeout):
-    icmp_request = IP(dst=str(host)) / ICMP()
-    start_time = time.time()
-    reply = sr1(icmp_request, timeout=timeout / 1000, verbose=0)
-    end_time = time.time()
-
-    if reply:
-        response_time = (end_time - start_time) * 1000  # em milissegundos
-        return response_time
-    return None
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", str(timeout // 1000), str(host)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        if result.returncode == 0:
+            return True  # Host respondeu ao ping
+    except Exception as e:
+        print(f"Erro ao pingar {host}: {e}")
+    return False
 
 # Função para realizar a varredura de uma rede e encontrar hosts ativos
 def scan_network(network, timeout):
@@ -27,11 +29,9 @@ def scan_network(network, timeout):
     for host in network:
         if host == network.network_address or host == network.broadcast_address:
             continue
-        
+
         total_hosts += 1
-        response_time = ping_host(host, timeout)
-        
-        if response_time is not None:
+        if ping_host(host, timeout):
             active_hosts.append(str(host))
 
     end_scan = time.time()
@@ -42,49 +42,50 @@ def scan_network(network, timeout):
 # Função para capturar pacotes de rede e monitorar DNS e HTTP
 def sniff_packets(active_hosts):
     log_entries = []
-    sniffer_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IP)
+    sniffer_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
     sniffer_socket.bind(("0.0.0.0", 0))
     sniffer_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-    
-    while True:
-        raw_data, addr = sniffer_socket.recvfrom(65535)
-        ip_header = raw_data[0:20]
-        iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
-        src_ip = get_ip_from_bytes(iph[8])
-        
-        if src_ip not in active_hosts:
-            continue  # Ignora pacotes de hosts que não estão na lista de ativos
-        
-        date_time = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        
-        # Verificar se é pacote HTTP
-        if raw_data[23] == 6:  # Protocolo TCP
-            tcp_header = raw_data[20:40]
-            tcph = struct.unpack('!HHLLBBHHH', tcp_header)
-            src_port = tcph[0]
-            dest_port = tcph[1]
-            data_offset = tcph[4] >> 4
-            header_size = 20 + data_offset * 4
-            data = raw_data[header_size:]
-            
-            if data.startswith(b'GET') or data.startswith(b'POST'):
-                try:
-                    http_request = data.decode('utf-8')
-                    lines = http_request.split('\r\n')
-                    url = lines[0].split(' ')[1]
-                    if not url.startswith("http"):
-                        url = "http://" + src_ip + url
-                    log_entries.append((date_time, src_ip, url))
-                    print(f"Captured HTTP request: {src_ip} requested {url}")
-                except:
-                    continue
 
-        # Condição de parada para a demonstração (captura por 10 pacotes e sai)
-        if len(log_entries) >= 10:
-            break
+    print("Iniciando captura de pacotes...")
+    try:
+        while True:
+            raw_data, addr = sniffer_socket.recvfrom(65535)
+            ip_header = raw_data[0:20]
+            iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
+            src_ip = get_ip_from_bytes(iph[8])
 
-    sniffer_socket.close()
-    save_to_html(log_entries)
+            if src_ip not in active_hosts:
+                continue  # Ignora pacotes de hosts que não estão na lista de ativos
+
+            date_time = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+            # Verificar se é pacote HTTP
+            if raw_data[23] == 6:  # Protocolo TCP
+                tcp_header = raw_data[20:40]
+                tcph = struct.unpack('!HHLLBBHHH', tcp_header)
+                header_size = 20 + (tcph[4] >> 4) * 4
+                data = raw_data[header_size:]
+
+                if data.startswith(b'GET') or data.startswith(b'POST'):
+                    try:
+                        http_request = data.decode('utf-8')
+                        lines = http_request.split('\r\n')
+                        url = lines[0].split(' ')[1]
+                        if not url.startswith("http"):
+                            url = "http://" + src_ip + url
+                        log_entries.append((date_time, src_ip, url))
+                        print(f"Captured HTTP request: {src_ip} requested {url}")
+                    except:
+                        continue
+
+            # Condição de parada para demonstração
+            if len(log_entries) >= 10:
+                break
+    except KeyboardInterrupt:
+        print("\nFinalizando captura.")
+    finally:
+        sniffer_socket.close()
+        save_to_html(log_entries)
 
 # Função para salvar as entradas de log no formato HTML
 def save_to_html(log_entries):
