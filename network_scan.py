@@ -6,19 +6,31 @@ import ipaddress
 from urllib.parse import urlparse
 import subprocess
 
+
+# Função para validar a entrada da rede
+def validate_network_input(network_input):
+    try:
+        ipaddress.IPv4Network(network_input, strict=False)
+        return True
+    except ValueError:
+        print("Erro: Rede inválida. Use o formato CIDR, como 10.32.143.0/24.")
+        return False
+
+
 # Função para enviar um ping e verificar se o host está ativo
 def ping_host(host, timeout):
     try:
+        timeout_seconds = timeout / 1000  # Convertendo ms para s
         result = subprocess.run(
-            ["ping", "-c", "1", "-W", str(timeout // 1000), str(host)],
+            ["ping", "-c", "1", "-W", str(int(timeout_seconds)), str(host)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
-        if result.returncode == 0:
-            return True  # Host respondeu ao ping
+        return result.returncode == 0
     except Exception as e:
         print(f"Erro ao pingar {host}: {e}")
-    return False
+        return False
+
 
 # Função para realizar a varredura de uma rede e encontrar hosts ativos
 def scan_network(network, timeout):
@@ -27,17 +39,23 @@ def scan_network(network, timeout):
     start_scan = time.time()
 
     for host in network:
+        print(f"Pingando o host: {host}")  # Verificar progresso
         if host == network.network_address or host == network.broadcast_address:
+            print(f"Ignorando {host} (endereço de rede ou broadcast)")
             continue
 
         total_hosts += 1
         if ping_host(host, timeout):
+            print(f"Host ativo: {host}")
             active_hosts.append(str(host))
+        else:
+            print(f"Sem resposta: {host}")
 
     end_scan = time.time()
     total_scan_time = (end_scan - start_scan) * 1000  # em milissegundos
 
     return active_hosts, total_hosts, total_scan_time
+
 
 # Função para capturar pacotes de rede e monitorar DNS e HTTP
 def sniff_packets(active_hosts):
@@ -87,8 +105,10 @@ def sniff_packets(active_hosts):
         sniffer_socket.close()
         save_to_html(log_entries)
 
+
 # Função para salvar as entradas de log no formato HTML
 def save_to_html(log_entries):
+    print("Salvando o arquivo HTML...")  # Log para depuração
     with open("historico.html", "w") as f:
         f.write("<html>\n<header>\n<title>Historico de Navegacao</title>\n</header>\n<body>\n<ul>\n")
         for entry in log_entries:
@@ -99,16 +119,22 @@ def save_to_html(log_entries):
             else:
                 f.write(f'<li>{date_time} - {ip} - <a href="{url}">{url}</a></li>\n')
         f.write("</ul>\n</body>\n</html>")
+    print("Arquivo HTML salvo com sucesso!")  # Log para depuração
+
 
 # Função para extrair o IP a partir dos bytes do cabeçalho IP
 def get_ip_from_bytes(ip_bytes):
     return '.'.join(map(str, ip_bytes))
 
+
 # Função principal
 def main():
-    # Exemplo de entrada de rede e máscara
-    network_input = input("Digite a rede e máscara (ex.: 192.168.1.128/25): ")
+    # Entrada da rede e máscara
+    network_input = input("Digite a rede e máscara (ex.: 10.32.143.0/24): ")
     timeout = int(input("Digite o tempo limite de espera (em ms): "))
+
+    if not validate_network_input(network_input):
+        return
 
     # Converte a entrada em uma rede válida
     network = ipaddress.IPv4Network(network_input, strict=False)
@@ -123,6 +149,7 @@ def main():
 
     # Executa o sniffer para monitorar os hosts ativos
     sniff_packets(active_hosts)
+
 
 if __name__ == "__main__":
     main()
